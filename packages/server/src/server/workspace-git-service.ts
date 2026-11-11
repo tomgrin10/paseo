@@ -343,6 +343,13 @@ type WorkspaceGitRefreshOrigin = "demand" | "observation";
 export interface WorkspaceGitCheckoutReadOptions {
   /** Git lane for the fresh checkout read; defaults to the caller's ambient lane. */
   priority?: GitProcessPriority;
+  /**
+   * Serve a Git workspace this service already observes from its watched snapshot
+   * instead of reading Git again. Only taken while both watches are live and no
+   * refresh is pending; anything else falls back to the fresh read. For background
+   * convergence (reconciliation) — a fresh read is ~14 Git spawns per workspace.
+   */
+  preferObserved?: boolean;
 }
 
 // A caller waiting on a merged refresh keeps it out of the background lane.
@@ -814,6 +821,12 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
   ): Promise<ProjectCheckoutLitePayload> {
     this.assertNotDisposed();
     const normalizedCwd = resolve(cwd);
+    if (options?.preferObserved) {
+      const observed = this.readObservedCheckout(normalizedCwd);
+      if (observed) {
+        return observed;
+      }
+    }
     const status = await this.deps.getCheckoutStatus(normalizedCwd, {
       paseoHome: this.paseoHome,
       worktreesRoot: this.worktreesRoot,
@@ -850,6 +863,37 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
       isPaseoOwnedWorktree: status.isPaseoOwnedWorktree,
       mainRepoRoot: status.mainRepoRoot,
     });
+  }
+
+  // The watched snapshot is as current as a fresh read only while every change
+  // reaches a watcher: the working-tree and repo-metadata subscriptions are live
+  // (not degraded to polling) and no refresh is debounced or running.
+  private readObservedCheckout(cwd: string): ProjectCheckoutLitePayload | null {
+    const target = this.workspaceTargets.get(cwd);
+    if (
+      !target ||
+      !target.observationSetupComplete ||
+      !this.isActiveObservedWorkspaceTarget(target) ||
+      target.debounceTimer !== null ||
+      target.refreshState.status !== "idle"
+    ) {
+      return null;
+    }
+    const git = target.latestSnapshot?.git;
+    if (!git?.isGit) {
+      return null;
+    }
+    const workingTree = target.workingTreeWatchTarget;
+    const repo = target.repoGitRoot ? this.repoTargets.get(target.repoGitRoot) : undefined;
+    if (
+      !workingTree?.subscription ||
+      workingTree.fallbackPolling ||
+      !repo?.subscription ||
+      repo.fallbackPolling
+    ) {
+      return null;
+    }
+    return checkoutLiteFromGitSnapshot(cwd, git);
   }
 
   private getCachedSnapshot(cwd: string): WorkspaceGitRuntimeSnapshot | null {

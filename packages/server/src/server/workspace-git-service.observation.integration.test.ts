@@ -1093,3 +1093,66 @@ test("idle observed workspaces stay under a fixed Git spawn budget", async () =>
   // Total budget: per repo and fetch cycle, the fetch plus two ref listings.
   expect(idle.length).toBeLessThanOrEqual(repoCount * fetchCycles * 3);
 }, 120_000);
+
+test("a background checkout read of an observed workspace is served from the watch without spawning Git", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "paseo-git-observed-checkout-")));
+  const repo = path.join(root, "repo");
+  const unobserved = path.join(root, "unobserved");
+  for (const dir of [repo, unobserved]) {
+    mkdirSync(dir);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd: dir, stdio: "pipe" });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(path.join(dir, "README.md"), "base\n");
+    git("add", ".");
+    git("commit", "-qm", "base");
+  }
+  const service = new WorkspaceGitServiceImpl({
+    logger: pino({ enabled: false }),
+    paseoHome: path.join(root, "home"),
+  });
+  const branches: Array<string | null> = [];
+  const subscription = service.registerWorkspace({ cwd: repo }, (snapshot) => {
+    branches.push(snapshot.git.currentBranch);
+  });
+  cleanup.push(async () => {
+    subscription.unsubscribe();
+    await service.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+  startGitCommandMetrics();
+  await service.getSnapshot(repo, { includeForge: false });
+  await waitForGitCommandMetricsIdle({ quietMs: 500, timeoutMs: 10_000 });
+  stopGitCommandMetrics();
+
+  const fresh = await service.getCheckout(repo);
+  startGitCommandMetrics();
+  const observed = await service.getCheckout(repo, { preferObserved: true });
+  expect(stopGitCommandMetrics().submitted).toBe(0);
+  expect(observed).toEqual(fresh);
+
+  // A branch switch reaches the observed checkout through the watch, with no demand read.
+  const delivered = branches.length;
+  execFileSync("git", ["switch", "-q", "-c", "feature"], { cwd: repo, stdio: "pipe" });
+  await expect.poll(() => branches.slice(delivered), { timeout: 10_000 }).toContain("feature");
+  await expect
+    .poll(
+      async () => {
+        startGitCommandMetrics();
+        const checkout = await service.getCheckout(repo, { preferObserved: true });
+        const spawned = stopGitCommandMetrics().submitted;
+        return { branch: checkout.currentBranch, spawned };
+      },
+      { timeout: 10_000 },
+    )
+    .toEqual({ branch: "feature", spawned: 0 });
+
+  // A checkout nobody observes is still read from Git.
+  startGitCommandMetrics();
+  const cold = await service.getCheckout(unobserved, { preferObserved: true });
+  await waitForGitCommandMetricsIdle({ quietMs: 0, timeoutMs: 10_000 });
+  expect(stopGitCommandMetrics().submitted).toBeGreaterThan(0);
+  expect(cold.currentBranch).toBe("main");
+}, 30_000);
