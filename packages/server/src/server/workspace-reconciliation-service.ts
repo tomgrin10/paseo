@@ -587,8 +587,13 @@ export class WorkspaceReconciliationService {
       };
     }
     // Reconciliation converges in the background; it must not queue ahead of
-    // Git work a user is waiting for.
-    return this.workspaceGitService.getCheckout(cwd, { priority: "background" });
+    // Git work a user is waiting for. A workspace whose watches are live is
+    // already current: reading it again forks the daemon ~14 times per
+    // workspace on every rescan.
+    return this.workspaceGitService.getCheckout(cwd, {
+      priority: "background",
+      preferObserved: true,
+    });
   }
 
   private wakeInspectionWaiters(): void {

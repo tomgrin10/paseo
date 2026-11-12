@@ -7,6 +7,81 @@ import { windowsExecutableResolution } from "./windows.js";
 
 const PROBE_TIMEOUT_MS = 2000;
 
+// findExecutable runs `which -a` plus `<candidate> --version` for every call. Provider
+// availability checks and forge (gh/glab/tea) calls hit it many times a minute, and each
+// spawn forks the whole daemon (a 1 GB parent makes fork the dominant kernel cost). Results
+// are cached per (name, PATH): a found path for 5 minutes, a miss for 1 minute so a CLI
+// installed while the daemon runs is still picked up quickly. A PATH change is a different
+// key, and a cached path that no longer exists on disk is re-resolved.
+export const EXECUTABLE_CACHE_HIT_TTL_MS = 5 * 60_000;
+export const EXECUTABLE_CACHE_MISS_TTL_MS = 60_000;
+const EXECUTABLE_CACHE_MAX_ENTRIES = 256;
+
+interface ExecutableCacheEntry {
+  result: Promise<string | null>;
+  expiresAtMs: number;
+}
+
+const executableCache = new Map<string, ExecutableCacheEntry>();
+
+export function clearExecutableResolutionCache(): void {
+  executableCache.clear();
+}
+
+function executableCacheKey(name: string, env?: ProcessEnvRecord): string {
+  const windows = process.platform === "win32";
+  return JSON.stringify([
+    process.platform,
+    name,
+    env?.PATH ?? process.env.PATH ?? null,
+    windows ? (env?.PATHEXT ?? process.env.PATHEXT ?? null) : null,
+    windows ? (process.env.LOCALAPPDATA ?? null) : null,
+  ]);
+}
+
+function readCachedExecutable(key: string): Promise<string | null> | null {
+  const entry = executableCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (entry.expiresAtMs <= Date.now()) {
+    executableCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+function cacheExecutableLookup(
+  key: string,
+  resolveExecutable: () => Promise<string | null>,
+): Promise<string | null> {
+  // In flight: concurrent callers share the lookup. Settled: the TTL depends on the outcome.
+  const entry: ExecutableCacheEntry = {
+    result: Promise.resolve(null),
+    expiresAtMs: Number.POSITIVE_INFINITY,
+  };
+  executableCache.delete(key);
+  executableCache.set(key, entry);
+  while (executableCache.size > EXECUTABLE_CACHE_MAX_ENTRIES) {
+    const oldest = executableCache.keys().next().value;
+    if (oldest === undefined) break;
+    executableCache.delete(oldest);
+  }
+  entry.result = (async () => {
+    try {
+      const found = await resolveExecutable();
+      entry.expiresAtMs =
+        Date.now() + (found ? EXECUTABLE_CACHE_HIT_TTL_MS : EXECUTABLE_CACHE_MISS_TTL_MS);
+      return found;
+    } catch (error) {
+      // A failed lookup is not evidence of anything; never cache it.
+      if (executableCache.get(key) === entry) executableCache.delete(key);
+      throw error;
+    }
+  })();
+  return entry.result;
+}
+
 function hasPathSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
 }
@@ -153,6 +228,25 @@ export async function findExecutable(
     return null;
   }
 
+  const key = executableCacheKey(trimmed, env);
+  const cached = readCachedExecutable(key);
+  if (cached) {
+    const found = await cached.catch(() => undefined);
+    if (found === null || (found !== undefined && existsSync(found))) {
+      return found;
+    }
+    if (found !== undefined && executableCache.get(key)?.result === cached) {
+      executableCache.delete(key);
+    }
+  }
+  return cacheExecutableLookup(key, () => resolveExecutableUncached(trimmed, probeTimeoutMs, env));
+}
+
+async function resolveExecutableUncached(
+  trimmed: string,
+  probeTimeoutMs: number,
+  env: ProcessEnvRecord | undefined,
+): Promise<string | null> {
   if (process.platform === "win32") {
     return windowsExecutableResolution.find(trimmed, {
       enumeratePathCandidates: (command) => enumerateCandidates(command, env),

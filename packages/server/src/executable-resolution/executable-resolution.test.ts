@@ -1,9 +1,24 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { executableExists, findExecutable } from "./executable-resolution.js";
+import {
+  clearExecutableResolutionCache,
+  EXECUTABLE_CACHE_HIT_TTL_MS,
+  EXECUTABLE_CACHE_MISS_TTL_MS,
+  executableExists,
+  findExecutable,
+} from "./executable-resolution.js";
 import { windowsExecutableResolution } from "./windows.js";
 import { isPlatform } from "../test-utils/platform.js";
 
@@ -45,6 +60,8 @@ function expectWindowsPathsEqual(actual: string | null, expected: string): void 
 }
 
 afterEach(() => {
+  vi.useRealTimers();
+  clearExecutableResolutionCache();
   process.env.PATH = originalEnv.PATH;
   process.env.PATHEXT = originalEnv.PATHEXT;
   for (const dir of tempDirs.splice(0)) {
@@ -73,6 +90,94 @@ describe("findExecutable", () => {
       prependPath(nonExecutableDir, executableDir);
 
       await expect(findExecutable("foo")).resolves.toBe(executable);
+    });
+  });
+
+  describe.skipIf(isPlatform("win32"))("cache", () => {
+    // Each `--version` probe appends a line, so the log counts uncached resolutions.
+    function writeCountingExecutable(dir: string, name: string): { path: string; log: string } {
+      const log = path.join(dir, `${name}.probes`);
+      const file = writeExecutable(
+        path.join(dir, name),
+        `#!/bin/sh\necho probe >> "${log}"\necho 1.0\n`,
+      );
+      return { path: file, log };
+    }
+
+    function probeCount(log: string): number {
+      return existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0;
+    }
+
+    test("a repeated lookup is served from the cache without spawning", async () => {
+      const dir = makeTempDir();
+      const tool = writeCountingExecutable(dir, "paseo-cache-hit");
+      prependPath(dir);
+
+      await expect(findExecutable("paseo-cache-hit")).resolves.toBe(tool.path);
+      await expect(findExecutable("paseo-cache-hit")).resolves.toBe(tool.path);
+      await Promise.all([findExecutable("paseo-cache-hit"), findExecutable("paseo-cache-hit")]);
+
+      expect(probeCount(tool.log)).toBe(1);
+    });
+
+    test("a PATH change misses the cache, and the old PATH still hits", async () => {
+      const first = makeTempDir();
+      const second = makeTempDir();
+      const a = writeCountingExecutable(first, "paseo-cache-path");
+      const b = writeCountingExecutable(second, "paseo-cache-path");
+
+      prependPath(first);
+      await expect(findExecutable("paseo-cache-path")).resolves.toBe(a.path);
+      prependPath(second);
+      await expect(findExecutable("paseo-cache-path")).resolves.toBe(b.path);
+      await expect(
+        findExecutable("paseo-cache-path", { env: { PATH: process.env.PATH } }),
+      ).resolves.toBe(b.path);
+      prependPath(first);
+      await expect(findExecutable("paseo-cache-path")).resolves.toBe(a.path);
+
+      expect(probeCount(a.log)).toBe(1);
+      expect(probeCount(b.log)).toBe(1);
+    });
+
+    test("a found path expires after the hit TTL", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const dir = makeTempDir();
+      const tool = writeCountingExecutable(dir, "paseo-cache-ttl");
+      prependPath(dir);
+
+      await findExecutable("paseo-cache-ttl");
+      vi.advanceTimersByTime(EXECUTABLE_CACHE_HIT_TTL_MS - 1000);
+      await findExecutable("paseo-cache-ttl");
+      expect(probeCount(tool.log)).toBe(1);
+      vi.advanceTimersByTime(2000);
+      await findExecutable("paseo-cache-ttl");
+      expect(probeCount(tool.log)).toBe(2);
+    });
+
+    test("a miss is cached briefly, then a newly installed CLI is found", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const dir = makeTempDir();
+      prependPath(dir);
+
+      await expect(findExecutable("paseo-cache-late")).resolves.toBeNull();
+      const tool = writeCountingExecutable(dir, "paseo-cache-late");
+      await expect(findExecutable("paseo-cache-late")).resolves.toBeNull();
+      vi.advanceTimersByTime(EXECUTABLE_CACHE_MISS_TTL_MS + 1);
+      await expect(findExecutable("paseo-cache-late")).resolves.toBe(tool.path);
+    });
+
+    test("a cached path that was deleted is resolved again", async () => {
+      const first = makeTempDir();
+      const second = makeTempDir();
+      const a = writeCountingExecutable(first, "paseo-cache-gone");
+      const b = writeCountingExecutable(second, "paseo-cache-gone");
+      prependPath(first, second);
+
+      await expect(findExecutable("paseo-cache-gone")).resolves.toBe(a.path);
+      rmSync(a.path);
+      await expect(findExecutable("paseo-cache-gone")).resolves.toBe(b.path);
+      expect(probeCount(b.log)).toBe(1);
     });
   });
 
