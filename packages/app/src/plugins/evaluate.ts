@@ -4,6 +4,7 @@ import { openExternalUrl } from "@/utils/open-external-url";
 import * as pluginUiRuntime from "./react-native/ui";
 import { useRevealedText } from "@/hooks/use-revealed-text";
 import { useSettings } from "./settings/use-settings";
+import { usePluginDictation } from "./dictation/use-plugin-dictation";
 import * as pluginSharedRuntime from "@getpaseo/plugin";
 import * as pluginClientRuntime from "@getpaseo/plugin/client";
 import * as React from "react";
@@ -588,6 +589,7 @@ export function runPluginClientBundle(
         useSettings: (definition: import("@getpaseo/plugin").SettingsDefinition) =>
           useSettings(definition, id),
         openExternalUrl,
+        usePaseoDictation: usePluginDictation,
         getPaseoClient: (serverId: string) => runtime.hosts.getPaseoClient(serverId),
         useHosts: () =>
           React.useSyncExternalStore(

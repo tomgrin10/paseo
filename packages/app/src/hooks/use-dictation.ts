@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import {
+  claimDictation,
+  releaseDictation,
+  type DictationClaim,
+} from "@/dictation/active-dictation";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
 import { generateMessageId } from "@/types/stream";
@@ -75,6 +80,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     confirming: false,
     cancelling: false,
   });
+
+  const cancelDictationRef = useRef<() => Promise<void>>(async () => undefined);
+  const claimRef = useRef<DictationClaim>({ cancel: () => cancelDictationRef.current() });
 
   const senderRef = useRef<DictationStreamSender | null>(null);
   if (!senderRef.current) {
@@ -273,6 +281,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
     try {
       await audio.start();
+      claimDictation(claimRef.current);
       isRecordingRef.current = true;
       setIsRecording(true);
       if (enableDuration) {
@@ -335,6 +344,21 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       actionGateRef.current.cancelling = false;
     }
   }, [audio, clearStreamingState, reportError, stopDurationTracking]);
+
+  useEffect(() => {
+    cancelDictationRef.current = cancelDictation;
+  }, [cancelDictation]);
+
+  // The claim covers the microphone only; a stopped recording keeps transcribing.
+  useEffect(() => {
+    if (!isRecording) {
+      releaseDictation(claimRef.current);
+    }
+  }, [isRecording]);
+  useEffect(() => {
+    const claim = claimRef.current;
+    return () => releaseDictation(claim);
+  }, []);
 
   const confirmDictation = useCallback(async () => {
     if (actionGateRef.current.confirming) {

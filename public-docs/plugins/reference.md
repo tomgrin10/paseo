@@ -241,16 +241,16 @@ dependencies. `/client/host` is private to the app host; plugins cannot import i
 
 Paseo provides these modules to client code:
 
-| Module                       | Use it for                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------- |
-| `@getpaseo/plugin`           | Shared data, `defineRpc`, `defineSettings`, `defineAttachmentSource`, `RpcInput`, and `RpcOutput` |
-| `@getpaseo/plugin/client/ui` | Paseo UI components and UI hooks                                                                  |
-| `@getpaseo/plugin/client`    | Client contribution contexts, `usePaseo`, `useRpc`, `useSettings`, and data hooks                 |
-| `@tanstack/react-query`      | Request state and caching                                                                         |
-| `react`                      | Components and hooks                                                                              |
-| `react/jsx-runtime`          | Compiled JSX                                                                                      |
-| `react-native`               | Cross-platform UI                                                                                 |
-| `zod`                        | Shared schemas                                                                                    |
+| Module                       | Use it for                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `@getpaseo/plugin`           | Shared data, `defineRpc`, `defineSettings`, `defineAttachmentSource`, `RpcInput`, and `RpcOutput`      |
+| `@getpaseo/plugin/client/ui` | Paseo UI components and UI hooks                                                                       |
+| `@getpaseo/plugin/client`    | Client contribution contexts, `usePaseo`, `useRpc`, `useSettings`, `usePaseoDictation`, and data hooks |
+| `@tanstack/react-query`      | Request state and caching                                                                              |
+| `react`                      | Components and hooks                                                                                   |
+| `react/jsx-runtime`          | Compiled JSX                                                                                           |
+| `react-native`               | Cross-platform UI                                                                                      |
+| `zod`                        | Shared schemas                                                                                         |
 
 The host owns its paired React and renderer versions. The SDK's React peer range permits patch
 versions for tooling and Node consumers; it does not change the app's pinned React version or
@@ -298,6 +298,46 @@ MIME parameters are accepted. Pass a complete audio file; raw PCM samples are no
 Browsers require user interaction before allowing sound; handle rejection and offer a
 play button. The function plays on the device running the plugin client, not on the daemon,
 and does not promise delivery while the app is suspended or closed.
+
+### Dictate text
+
+`usePaseoDictation({ onText })` records from the microphone and transcribes with the dictation
+settings of the plugin's host; pass `serverId` to use another host. It uses the same audio source, speech-to-text
+provider and microphone permission as the composer's dictation, on browser, Electron, iOS and
+Android. Your plugin receives the final text and nothing else.
+
+```tsx
+import { usePaseoDictation } from "@getpaseo/plugin/client";
+import { Pressable, Text } from "react-native";
+
+export function DictateButton({ onText }: { onText(text: string): void }) {
+  const dictation = usePaseoDictation({ onText });
+  if (dictation.unavailable) return null;
+  const listening = dictation.status === "listening";
+  return (
+    <Pressable
+      disabled={dictation.status === "transcribing"}
+      onPress={() => void (listening ? dictation.stop() : dictation.start())}
+    >
+      <Text>{listening ? "Stop" : "Dictate"}</Text>
+    </Pressable>
+  );
+}
+```
+
+| Field         | Value                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `unavailable` | `null`, or `{ reason: "disconnected" \| "not_ready", message }` with the host's explanation |
+| `status`      | `idle`, `listening` or `transcribing`                                                       |
+| `volume`      | Input level from 0 to 1 while listening                                                     |
+| `error`       | The last start or transcription failure, such as a denied microphone permission             |
+| `start()`     | Asks for the microphone and starts listening                                                |
+| `stop()`      | Stops listening; `onText` receives the transcript                                           |
+| `cancel()`    | Stops listening and discards the audio                                                      |
+
+Insert the text where the user is typing and let them edit it; the hook never sends anything.
+One client records one dictation at a time: starting one cancels the recording in progress,
+including the composer's. Unmounting the component cancels its recording.
 
 ### External links and workspace browsers
 

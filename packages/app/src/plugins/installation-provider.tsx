@@ -1,4 +1,5 @@
 import { getPluginClientApi } from "./client-state/api";
+import { PluginInstallationHostContext } from "./installation-host";
 import { QueryClientProvider } from "@tanstack/react-query";
 import {
   PaseoApiProvider,
@@ -37,7 +38,11 @@ export function PluginInstallationProvider({
         <PluginRpcProvider invoke={plugin.invoke} subscribe={plugin.subscribe}>
           <PluginTranslationProvider runtime={plugin.i18n}>
             <PluginComposersProvider source={pluginComposersSource(plugin)}>
-              <PluginClientStateProvider source={state}>{children}</PluginClientStateProvider>
+              <PluginClientStateProvider source={state}>
+                <PluginInstallationHostContext.Provider value={plugin.serverId}>
+                  {children}
+                </PluginInstallationHostContext.Provider>
+              </PluginClientStateProvider>
             </PluginComposersProvider>
           </PluginTranslationProvider>
         </PluginRpcProvider>

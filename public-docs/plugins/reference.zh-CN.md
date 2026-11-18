@@ -213,7 +213,7 @@ Paseo 为客户端代码提供以下模块：
 | ---------------------------- | -------------------------------------------------------------------------------------------- |
 | `@getpaseo/plugin`           | 共享数据、`defineRpc`、`defineSettings`、`defineAttachmentSource`、`RpcInput` 和 `RpcOutput` |
 | `@getpaseo/plugin/client/ui` | Paseo UI 组件和 UI hook                                                                      |
-| `@getpaseo/plugin/client`    | 客户端贡献 context、`usePaseo`、`useRpc`、`useSettings` 和数据 hook                          |
+| `@getpaseo/plugin/client`    | 客户端贡献 context、`usePaseo`、`useRpc`、`useSettings`、`usePaseoDictation` 和数据 hook     |
 | `@tanstack/react-query`      | 请求状态和缓存                                                                               |
 | `react`                      | 组件和 hook                                                                                  |
 | `react/jsx-runtime`          | 编译后的 JSX                                                                                 |
@@ -252,6 +252,41 @@ await client.playAudio(audio);
 promise 在播放结束时 resolve，在文件无效、播放失败或插件卸载时 reject。调用共享 Paseo 的语音播放队列，并按顺序播放。卸载插件会取消它正在播放和排队中的音频。语音播放控件也可以中断这个共享队列。播放不会请求麦克风权限。
 
 为了可移植性，请使用 PCM WAV 或 MP3 文件。其他编解码格式取决于客户端的解码器。接受 MIME 参数。请传入完整的音频文件；不支持原始 PCM 采样。浏览器要求用户交互后才允许播放声音；请处理 reject 并提供一个播放按钮。该函数在运行插件客户端的设备上播放，而不是在 daemon 上，并且不保证应用被挂起或关闭时仍能播放。
+
+### 听写文本 {#dictate-text}
+
+`usePaseoDictation({ onText })` 从麦克风录音，并使用插件所在 host 的听写设置转写；传入 `serverId` 可以使用其他 host。它与输入框的听写使用相同的音频来源、语音转文字服务和麦克风权限，支持浏览器、Electron、iOS 和 Android。插件只会收到最终文本。
+
+```tsx
+import { usePaseoDictation } from "@getpaseo/plugin/client";
+import { Pressable, Text } from "react-native";
+
+export function DictateButton({ onText }: { onText(text: string): void }) {
+  const dictation = usePaseoDictation({ onText });
+  if (dictation.unavailable) return null;
+  const listening = dictation.status === "listening";
+  return (
+    <Pressable
+      disabled={dictation.status === "transcribing"}
+      onPress={() => void (listening ? dictation.stop() : dictation.start())}
+    >
+      <Text>{listening ? "Stop" : "Dictate"}</Text>
+    </Pressable>
+  );
+}
+```
+
+| 字段          | 值                                                                                        |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `unavailable` | `null`，或 `{ reason: "disconnected" \| "not_ready", message }`，`message` 是 host 的说明 |
+| `status`      | `idle`、`listening` 或 `transcribing`                                                     |
+| `volume`      | 录音时的输入音量，范围 0 到 1                                                             |
+| `error`       | 最近一次启动或转写失败的原因，例如麦克风权限被拒绝                                        |
+| `start()`     | 请求麦克风并开始录音                                                                      |
+| `stop()`      | 停止录音；`onText` 收到转写结果                                                           |
+| `cancel()`    | 停止录音并丢弃音频                                                                        |
+
+把文本插入用户正在输入的位置，并允许用户编辑；这个 hook 不会发送任何内容。一个客户端同一时间只录一段听写：开始新的听写会取消正在进行的录音，包括输入框的听写。组件卸载时会取消它的录音。
 
 ### 外部链接和工作区浏览器 {#external-links-and-workspace-browsers}
 

@@ -125,6 +125,37 @@ export declare function getPaseoClient(serverId: string): import("@getpaseo/clie
 /** Open an absolute HTTP(S) URL using the client platform’s external opener. */
 export declare function openExternalUrl(url: string): Promise<void>;
 
+/** Dictation on the host the plugin names. Supplied by the app's client bundle loader. */
+export interface PluginDictationOptions {
+  /** Host whose speech-to-text settings transcribe the audio. Defaults to the plugin's host. */
+  readonly serverId?: string;
+  /** Receives the final transcript. Paseo never sends it anywhere. */
+  onText(text: string): void;
+}
+export type PluginDictationStatus = "idle" | "listening" | "transcribing";
+export interface PluginDictationUnavailable {
+  /** `disconnected`: the host is offline. `not_ready`: the host has no usable dictation. */
+  readonly reason: "disconnected" | "not_ready";
+  /** The host's explanation, when it gives one. */
+  readonly message: string | null;
+}
+export interface PluginDictation {
+  /** `null` when dictation can start. */
+  readonly unavailable: PluginDictationUnavailable | null;
+  readonly status: PluginDictationStatus;
+  /** Input level from 0 to 1 while listening. */
+  readonly volume: number;
+  /** Last start or transcription failure, such as a denied microphone permission. */
+  readonly error: string | null;
+  start(): Promise<void>;
+  /** Stops listening and delivers the transcript to `onText`. */
+  stop(): Promise<void>;
+  /** Stops listening and discards the audio. */
+  cancel(): Promise<void>;
+}
+/** Record from the microphone and transcribe with the host's dictation settings. */
+export declare function usePaseoDictation(options: PluginDictationOptions): PluginDictation;
+
 export { defineTranslations, useTranslation } from "./translations.js";
 export type { PluginI18n } from "./translations.js";
 export type { PluginText, PluginMessage, PluginTranslations } from "../text.js";
